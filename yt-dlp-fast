@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# yt-dlp-fast — high-performance yt-dlp wrapper
+# Usage: yt-dlp-fast [--fast|--turbo|--safe|--audio|--video|--benchmark] [yt-dlp options] URL
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+CONFIG_FILE="/etc/yt-dlp-fast/yt-dlp-fast.conf"
+LOG_FILE="/var/log/yt-dlp-fast/yt-dlp-fast.log"
+
+# ── Load config if available ──────────────────────────────────────────────────
+if [[ -f "${CONFIG_FILE}" ]]; then
+    # shellcheck source=/dev/null
+    source "${CONFIG_FILE}"
+fi
+
+# ── Defaults (can be overridden by config) ────────────────────────────────────
+MODE="${MODE:-turbo}"
+CONCURRENT_FRAGMENTS="${CONCURRENT_FRAGMENTS:-16}"
+ARIA2_CONNECTIONS="${ARIA2_CONNECTIONS:-16}"
+ARIA2_SPLIT="${ARIA2_SPLIT:-16}"
+CHUNK_SIZE="${CHUNK_SIZE:-1M}"
+SOCKET_TIMEOUT="${SOCKET_TIMEOUT:-15}"
+RETRIES="${RETRIES:-10}"
+FRAGMENT_RETRIES="${FRAGMENT_RETRIES:-10}"
+
+log() {
+    local log_dir
+    log_dir="$(dirname "${LOG_FILE}")"
+    if [[ -d "${log_dir}" ]] || mkdir -p "${log_dir}" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "${LOG_FILE}" 2>/dev/null || true
+    fi
+}
+
+info()  { echo -e "${GREEN}[yt-dlp-fast]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[yt-dlp-fast]${NC} $*"; }
+error() { echo -e "${RED}[yt-dlp-fast]${NC} $*" >&2; }
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+MODE_FLAG=""
+PASSTHROUGH_ARGS=()
+
+if [[ $# -eq 0 ]]; then
+    echo "Usage: yt-dlp-fast [--fast|--turbo|--safe|--audio|--video|--benchmark] [yt-dlp-args] URL"
+    exit 1
+fi
+
+# Check if first argument is a mode flag
+case "${1:-}" in
+    --fast|--turbo|--safe|--audio|--video|--benchmark)
+        MODE_FLAG="${1}"
+        shift
+        ;;
+    *)
+        # No mode flag; use default from config (turbo)
+        MODE_FLAG="--${MODE}"
+        ;;
+esac
+
+PASSTHROUGH_ARGS=("$@")
+
+# ── Build yt-dlp argument arrays ──────────────────────────────────────────────
+
+# Common aria2c turbo args
+aria2c_fast_args() {
+    local conns="${1:-8}" splits="${2:-8}"
+    echo "aria2c:-x ${conns} -s ${splits} -k ${CHUNK_SIZE} --file-allocation=none --summary-interval=0"
+}
+
+YTDLP_ARGS=()
+
+case "${MODE_FLAG}" in
+    --fast)
+        info "Mode: FAST (8 parallel connections)"
+        log "Mode: fast"
+        YTDLP_ARGS=(
+            --downloader aria2c
+            --downloader-args "$(aria2c_fast_args 8 8)"
+            --concurrent-fragments 8
+            --fragment-retries "${FRAGMENT_RETRIES}"
+            --retries "${RETRIES}"
+            --socket-timeout "${SOCKET_TIMEOUT}"
+            --merge-output-format mp4
+        )
+        ;;
+    --turbo)
+        info "Mode: TURBO (16 parallel connections)"
+        log "Mode: turbo"
+        YTDLP_ARGS=(
+            --downloader aria2c
+            --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
+            --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
+            --fragment-retries "${FRAGMENT_RETRIES}"
+            --retries "${RETRIES}"
+            --socket-timeout "${SOCKET_TIMEOUT}"
+            --merge-output-format mp4
+        )
+        ;;
+    --safe)
+        info "Mode: SAFE (no aria2c, conservative settings)"
+        log "Mode: safe"
+        YTDLP_ARGS=(
+            --fragment-retries 5
+            --retries 5
+            --socket-timeout 30
+            --merge-output-format mp4
+        )
+        ;;
+    --audio)
+        info "Mode: AUDIO (MP3, best quality)"
+        log "Mode: audio"
+        YTDLP_ARGS=(
+            --downloader aria2c
+            --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
+            --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
+            --fragment-retries "${FRAGMENT_RETRIES}"
+            --retries "${RETRIES}"
+            --socket-timeout "${SOCKET_TIMEOUT}"
+            -x
+            --audio-format mp3
+            --audio-quality 0
+        )
+        ;;
+    --video)
+        info "Mode: VIDEO (bestvideo+bestaudio)"
+        log "Mode: video"
+        YTDLP_ARGS=(
+            --downloader aria2c
+            --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
+            --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
+            --fragment-retries "${FRAGMENT_RETRIES}"
+            --retries "${RETRIES}"
+            --socket-timeout "${SOCKET_TIMEOUT}"
+            -f "bestvideo+bestaudio/best"
+            --merge-output-format mp4
+        )
+        ;;
+    --benchmark)
+        info "Mode: BENCHMARK"
+        log "Mode: benchmark"
+        if [[ ${#PASSTHROUGH_ARGS[@]} -eq 0 ]]; then
+            error "Benchmark mode requires a URL argument."
+            exit 1
+        fi
+        URL="${PASSTHROUGH_ARGS[0]}"
+        BENCH_DIR="/tmp/yt-dlp-fast-bench-$$"
+        mkdir -p "${BENCH_DIR}"
+
+        run_timed() {
+            local label="$1"; shift
+            local start end elapsed
+            start=$(date +%s%N)
+            yt-dlp "$@" -o "${BENCH_DIR}/%(title)s.%(ext)s" "${URL}" \
+                --no-playlist --max-filesize 50M 2>&1 | tail -5 || true
+            end=$(date +%s%N)
+            elapsed=$(( (end - start) / 1000000 ))
+            echo -e "${GREEN}${label}${NC}: ${elapsed}ms elapsed"
+            log "Benchmark ${label}: ${elapsed}ms"
+        }
+
+        echo ""
+        echo -e "${YELLOW}════════════════════ BENCHMARK ════════════════════${NC}"
+        echo -e "${YELLOW}URL: ${URL}${NC}"
+        echo ""
+
+        echo -e "${YELLOW}[1/3] Baseline (plain yt-dlp, safe settings)...${NC}"
+        run_timed "SAFE  " \
+            --fragment-retries 5 --retries 5 --socket-timeout 30 \
+            --merge-output-format mp4
+
+        echo ""
+        echo -e "${YELLOW}[2/3] Fast mode (aria2c -x8)...${NC}"
+        run_timed "FAST  " \
+            --downloader aria2c \
+            --downloader-args "$(aria2c_fast_args 8 8)" \
+            --concurrent-fragments 8 \
+            --fragment-retries 10 --retries 10 --socket-timeout 15 \
+            --merge-output-format mp4
+
+        echo ""
+        echo -e "${YELLOW}[3/3] Turbo mode (aria2c -x16)...${NC}"
+        run_timed "TURBO " \
+            --downloader aria2c \
+            --downloader-args "$(aria2c_fast_args 16 16)" \
+            --concurrent-fragments 16 \
+            --fragment-retries 10 --retries 10 --socket-timeout 15 \
+            --merge-output-format mp4
+
+        echo ""
+        echo -e "${YELLOW}═══════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}NOTE: Results depend on your server, network and CDN.${NC}"
+        echo -e "${YELLOW}Speedup is not guaranteed.${NC}"
+        echo ""
+
+        # Cleanup
+        [[ -n "${BENCH_DIR}" && "${BENCH_DIR}" == /tmp/yt-dlp-fast-bench-* ]] && rm -rf "${BENCH_DIR}"
+        exit 0
+        ;;
+    *)
+        warn "Unknown mode '${MODE_FLAG}'. Using turbo defaults."
+        log "Unknown mode ${MODE_FLAG}, falling back to turbo"
+        YTDLP_ARGS=(
+            --downloader aria2c
+            --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
+            --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
+            --fragment-retries "${FRAGMENT_RETRIES}"
+            --retries "${RETRIES}"
+            --socket-timeout "${SOCKET_TIMEOUT}"
+            --merge-output-format mp4
+        )
+        ;;
+esac
+
+# ── Execute yt-dlp ────────────────────────────────────────────────────────────
+log "Executing: yt-dlp ${YTDLP_ARGS[*]} ${PASSTHROUGH_ARGS[*]}"
+
+exec yt-dlp "${YTDLP_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}"
