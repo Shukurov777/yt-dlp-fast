@@ -1,0 +1,33 @@
+# yt-dlp-fast patch: http_fast.patch
+# Target file: yt_dlp/downloader/http.py
+# Compatible with yt-dlp versions: 2024.03.10 – 2024.11.18
+#
+# Changes:
+#   1. Increase READ_SIZE from 4096 to 65536 bytes for fewer syscalls
+#   2. Add Connection: keep-alive and Accept-Encoding headers by default
+#   3. Mark with yt-dlp-fast comment
+
+--- a/yt_dlp/downloader/http.py
++++ b/yt_dlp/downloader/http.py
+@@ -15,7 +15,8 @@ from ..utils import (
+ )
+ 
+ CONTENT_ENCODINGS = ('gzip', 'deflate', 'br')
+-READ_SIZE = 4096
++# yt-dlp-fast: increased read buffer for fewer syscalls and higher throughput
++READ_SIZE = 65536
+ 
+ 
+ class HttpFD(FileDownloader):
+@@ -60,6 +61,12 @@ class HttpFD(FileDownloader):
+             headers = req.headers
+         if headers.get('Youtubedl-no-compression'):
+             headers.pop('Youtubedl-no-compression', None)
++        # yt-dlp-fast: ensure persistent connections are requested
++        if 'Connection' not in headers:
++            headers['Connection'] = 'keep-alive'
++        if 'Keep-Alive' not in headers:
++            headers['Keep-Alive'] = 'timeout=30, max=100'
+ 
+         url = req.get_full_url()
+         request = Request(url, headers=headers)

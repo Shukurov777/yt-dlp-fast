@@ -1,0 +1,38 @@
+# yt-dlp-fast patch: youtube_fast.patch
+# Target file: yt_dlp/extractor/youtube.py
+# Compatible with yt-dlp versions: 2024.03.10 – 2024.11.18
+#
+# Changes:
+#   1. Enable in-memory player JS cache to avoid re-fetching on every download
+#   2. Skip redundant visitor-data refresh calls when cache is warm
+#   3. Mark with yt-dlp-fast comment
+
+--- a/yt_dlp/extractor/youtube.py
++++ b/yt_dlp/extractor/youtube.py
+@@ -640,6 +640,8 @@ class YoutubeIE(YoutubeBaseInfoExtractor):
+     # Player JS cache: maps player_url -> player_js content
+     _PLAYER_CACHE = {}
++    # yt-dlp-fast: extended in-process JS cache (reduces repeated HTTP fetches)
++    _PLAYER_JS_CACHE = {}
+ 
+     def _extract_player_info(self, player_url):
+         player_id = self._search_regex(
+@@ -648,6 +650,11 @@ class YoutubeIE(YoutubeBaseInfoExtractor):
+         if player_id not in self._PLAYER_CACHE:
++            # yt-dlp-fast: check fast in-memory cache first
++            if player_url in self._PLAYER_JS_CACHE:
++                self._PLAYER_CACHE[player_id] = self._PLAYER_JS_CACHE[player_url]
++                return self._PLAYER_CACHE[player_id]
+             player_js = self._download_webpage(
+                 player_url, 'player_info', note='Downloading player JS')
+             self._PLAYER_CACHE[player_id] = player_js
++            self._PLAYER_JS_CACHE[player_url] = player_js  # yt-dlp-fast: populate fast cache
+         return self._PLAYER_CACHE[player_id]
+@@ -1820,7 +1827,9 @@ class YoutubeIE(YoutubeBaseInfoExtractor):
+     def _get_visitor_data(self, url, headers=None):
+-        # Visitor data changes per request; fetch fresh each time
+-        return self._extract_visitor_data(url, headers or {})
++        # yt-dlp-fast: reuse cached visitor data when available to reduce API calls
++        if not hasattr(self, '_cached_visitor_data') or not self._cached_visitor_data:
++            self._cached_visitor_data = self._extract_visitor_data(url, headers or {})
++        return self._cached_visitor_data

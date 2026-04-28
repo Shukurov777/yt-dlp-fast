@@ -1,0 +1,37 @@
+# yt-dlp-fast patch: common_fast.patch
+# Target file: yt_dlp/downloader/common.py
+# Compatible with yt-dlp versions: 2024.03.10 – 2024.11.18
+#
+# Changes:
+#   1. Increase default concurrent_fragment_downloads from 1 to 4
+#   2. Reduce base retry sleep from 1.0s to 0.5s for faster recovery
+#   3. Add yt-dlp-fast marker comment
+
+--- a/yt_dlp/downloader/common.py
++++ b/yt_dlp/downloader/common.py
+@@ -80,7 +80,8 @@ class FileDownloader:
+     }
+ 
+     params: dict
+-    _num_downloads: int
++    # yt-dlp-fast: concurrent fragment default raised to 4
++    _num_downloads: int  # patched by yt-dlp-fast
+ 
+     def __init__(self, ydl, params):
+         """Create a FileDownloader object with the given options."""
+@@ -105,7 +106,7 @@ class FileDownloader:
+ 
+     @staticmethod
+     def _sleep(timeout, n=0, msg=None):
+-        base = max(float(timeout), 1.0)
++        base = max(float(timeout), 0.5)  # yt-dlp-fast: reduced base sleep
+         if msg is None:
+             msg = f'Sleeping {base:.2f} seconds ...'
+         self._downloader.to_screen(msg)
+@@ -290,7 +291,7 @@ class FileDownloader:
+         if self.params.get('concurrent_fragment_downloads') is None:
+-            self.params['concurrent_fragment_downloads'] = 1
++            self.params['concurrent_fragment_downloads'] = 4  # yt-dlp-fast default
+ 
+         self._download_retries = self.params.get('retries', 10)
+         self._fragment_retries = self.params.get('fragment_retries', 10)
