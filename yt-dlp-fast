@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # yt-dlp-fast — high-performance yt-dlp wrapper
-# Usage: yt-dlp-fast [--fast|--turbo|--safe|--audio|--video|--benchmark] [yt-dlp options] URL
+# Usage: yt-dlp-fast [--fast|--turbo|--safe|--audio|--video|--benchmark|--debug] [yt-dlp options] URL
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -17,6 +17,14 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     # shellcheck source=/dev/null
     source "${CONFIG_FILE}"
 fi
+
+# ── Log file fallback to $HOME when /var/log is not writable ─────────────────
+_log_dir="$(dirname "${LOG_FILE}")"
+if [[ ! -d "${_log_dir}" ]] && ! mkdir -p "${_log_dir}" 2>/dev/null; then
+    LOG_FILE="${HOME}/.yt-dlp-fast/log.txt"
+    mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || true
+fi
+unset _log_dir
 
 # ── Defaults (can be overridden by config) ────────────────────────────────────
 MODE="${MODE:-turbo}"
@@ -40,20 +48,31 @@ info()  { echo -e "${GREEN}[yt-dlp-fast]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[yt-dlp-fast]${NC} $*"; }
 error() { echo -e "${RED}[yt-dlp-fast]${NC} $*" >&2; }
 
+# ── Node.js runtime check ─────────────────────────────────────────────────────
+if ! command -v node &>/dev/null; then
+    warn "Node.js is required for YouTube signature decoding. Install with: apt install nodejs"
+fi
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 MODE_FLAG=""
+DEBUG_MODE=false
 PASSTHROUGH_ARGS=()
 
 if [[ $# -eq 0 ]]; then
-    echo "Usage: yt-dlp-fast [--fast|--turbo|--safe|--audio|--video|--benchmark] [yt-dlp-args] URL"
+    echo "Usage: yt-dlp-fast [--fast|--turbo|--safe|--audio|--video|--benchmark|--debug] [yt-dlp-args] URL"
     exit 1
 fi
 
-# Check if first argument is a mode flag
+# Check if first argument is a mode or debug flag
 case "${1:-}" in
     --fast|--turbo|--safe|--audio|--video|--benchmark)
         MODE_FLAG="${1}"
         shift
+        ;;
+    --debug)
+        DEBUG_MODE=true
+        shift
+        MODE_FLAG="--${MODE}"
         ;;
     *)
         # No mode flag; use default from config (turbo)
@@ -61,7 +80,41 @@ case "${1:-}" in
         ;;
 esac
 
+# Allow --debug immediately after a mode flag
+if [[ "${1:-}" == "--debug" ]]; then
+    DEBUG_MODE=true
+    shift
+fi
+
 PASSTHROUGH_ARGS=("$@")
+
+# ── Detect YouTube URL ────────────────────────────────────────────────────────
+IS_YOUTUBE=false
+for _arg in "${PASSTHROUGH_ARGS[@]}"; do
+    if [[ "${_arg}" =~ (youtube\.com|youtu\.be)/ ]]; then
+        IS_YOUTUBE=true
+        break
+    fi
+done
+
+# ── Warn about cookies-from-browser on headless servers ──────────────────────
+for _arg in "${PASSTHROUGH_ARGS[@]}"; do
+    if [[ "${_arg}" == "--cookies-from-browser" ]]; then
+        if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+            warn "cookies-from-browser may not work reliably on headless servers. Consider using --cookies <file> instead."
+        fi
+        break
+    fi
+done
+
+# ── Check whether user already specified a format ────────────────────────────
+_user_has_format=false
+for _arg in "${PASSTHROUGH_ARGS[@]}"; do
+    if [[ "${_arg}" == "-f" || "${_arg}" == "--format" ]]; then
+        _user_has_format=true
+        break
+    fi
+done
 
 # ── Build yt-dlp argument arrays ──────────────────────────────────────────────
 
@@ -71,6 +124,14 @@ aria2c_fast_args() {
     echo "aria2c:-x ${conns} -s ${splits} -k ${CHUNK_SIZE} --file-allocation=none --summary-interval=0"
 }
 
+# For YouTube, scope aria2c to http/https/dash protocols only to avoid
+# interfering with format selection (prevents "Only images are available").
+if "${IS_YOUTUBE}"; then
+    _DOWNLOADER=(--downloader "dash,http,https:aria2c")
+else
+    _DOWNLOADER=(--downloader aria2c)
+fi
+
 YTDLP_ARGS=()
 
 case "${MODE_FLAG}" in
@@ -78,7 +139,7 @@ case "${MODE_FLAG}" in
         info "Mode: FAST (8 parallel connections)"
         log "Mode: fast"
         YTDLP_ARGS=(
-            --downloader aria2c
+            "${_DOWNLOADER[@]}"
             --downloader-args "$(aria2c_fast_args 8 8)"
             --concurrent-fragments 8
             --fragment-retries "${FRAGMENT_RETRIES}"
@@ -91,7 +152,7 @@ case "${MODE_FLAG}" in
         info "Mode: TURBO (16 parallel connections)"
         log "Mode: turbo"
         YTDLP_ARGS=(
-            --downloader aria2c
+            "${_DOWNLOADER[@]}"
             --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
             --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
             --fragment-retries "${FRAGMENT_RETRIES}"
@@ -114,7 +175,7 @@ case "${MODE_FLAG}" in
         info "Mode: AUDIO (MP3, best quality)"
         log "Mode: audio"
         YTDLP_ARGS=(
-            --downloader aria2c
+            "${_DOWNLOADER[@]}"
             --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
             --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
             --fragment-retries "${FRAGMENT_RETRIES}"
@@ -129,7 +190,7 @@ case "${MODE_FLAG}" in
         info "Mode: VIDEO (bestvideo+bestaudio)"
         log "Mode: video"
         YTDLP_ARGS=(
-            --downloader aria2c
+            "${_DOWNLOADER[@]}"
             --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
             --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
             --fragment-retries "${FRAGMENT_RETRIES}"
@@ -204,7 +265,7 @@ case "${MODE_FLAG}" in
         warn "Unknown mode '${MODE_FLAG}'. Using turbo defaults."
         log "Unknown mode ${MODE_FLAG}, falling back to turbo"
         YTDLP_ARGS=(
-            --downloader aria2c
+            "${_DOWNLOADER[@]}"
             --downloader-args "$(aria2c_fast_args "${ARIA2_CONNECTIONS}" "${ARIA2_SPLIT}")"
             --concurrent-fragments "${CONCURRENT_FRAGMENTS}"
             --fragment-retries "${FRAGMENT_RETRIES}"
@@ -215,7 +276,98 @@ case "${MODE_FLAG}" in
         ;;
 esac
 
-# ── Execute yt-dlp ────────────────────────────────────────────────────────────
+# ── YouTube-specific extractor args (bypass n-challenge and signature issues) ─
+if "${IS_YOUTUBE}"; then
+    YTDLP_ARGS+=(
+        --extractor-args "youtube:player_client=android"
+        --extractor-args "youtube:player_skip=webpage"
+    )
+    # Apply a broad-compatible format selector when the user hasn't chosen one
+    # and the mode doesn't set its own format (audio/video handle their own).
+    if ! "${_user_has_format}" && [[ "${MODE_FLAG}" != "--audio" && "${MODE_FLAG}" != "--video" ]]; then
+        YTDLP_ARGS+=(--format "bv*+ba/b")
+    fi
+fi
+
+# ── Debug mode args ───────────────────────────────────────────────────────────
+if "${DEBUG_MODE}"; then
+    YTDLP_ARGS+=(-v --print-traffic)
+fi
+
+# ── Execute yt-dlp with auto fallback ─────────────────────────────────────────
 log "Executing: yt-dlp ${YTDLP_ARGS[*]} ${PASSTHROUGH_ARGS[*]}"
 
-exec yt-dlp "${YTDLP_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}"
+# Safe fallback args — no aria2c, conservative settings
+_SAFE_ARGS=(
+    --fragment-retries "${FRAGMENT_RETRIES}"
+    --retries "${RETRIES}"
+    --socket-timeout 30
+    --merge-output-format mp4
+)
+if "${IS_YOUTUBE}"; then
+    _SAFE_ARGS+=(
+        --extractor-args "youtube:player_client=android"
+        --extractor-args "youtube:player_skip=webpage"
+    )
+fi
+if "${DEBUG_MODE}"; then
+    _SAFE_ARGS+=(-v --print-traffic)
+fi
+
+# Run yt-dlp; capture stderr to a temp file while still showing it in real-time
+# via process substitution so the user sees progress output.
+_tmp_err=$(mktemp)
+set +e
+yt-dlp "${YTDLP_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}" 2> >(tee "${_tmp_err}" >&2)
+_rc=$?
+# Wait for the tee subprocess (process substitution) to finish flushing
+wait 2>/dev/null || true
+set -e
+
+if [[ ${_rc} -eq 0 ]]; then
+    rm -f "${_tmp_err}"
+    exit 0
+fi
+
+# ── Fallback: format not available ───────────────────────────────────────────
+if grep -qE "Requested format is not available|No video formats found" "${_tmp_err}" 2>/dev/null; then
+    rm -f "${_tmp_err}"
+    warn "Requested format not available. Retrying with --format best..."
+    log "Format not available, retrying with --format best"
+
+    _tmp_err=$(mktemp)
+    set +e
+    yt-dlp "${_SAFE_ARGS[@]}" --format best "${PASSTHROUGH_ARGS[@]}" 2> >(tee "${_tmp_err}" >&2)
+    _rc=$?
+    wait 2>/dev/null || true
+    set -e
+
+    if [[ ${_rc} -eq 0 ]]; then
+        rm -f "${_tmp_err}"
+        exit 0
+    fi
+    rm -f "${_tmp_err}"
+
+    warn "Still failing. Retrying in safe mode without format override..."
+    log "Retrying in safe mode"
+    set +e
+    yt-dlp "${_SAFE_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}"
+    _rc=$?
+    set -e
+    exit ${_rc}
+fi
+
+rm -f "${_tmp_err}"
+
+# ── Fallback: turbo/fast mode general failure → safe mode ────────────────────
+if [[ "${MODE_FLAG}" == "--turbo" || "${MODE_FLAG}" == "--fast" ]]; then
+    warn "Download failed. Retrying in safe mode..."
+    log "Download failed, falling back to safe mode"
+    set +e
+    yt-dlp "${_SAFE_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}"
+    _rc=$?
+    set -e
+    exit ${_rc}
+fi
+
+exit ${_rc}
