@@ -91,7 +91,7 @@ PASSTHROUGH_ARGS=("$@")
 # ── Detect YouTube URL ────────────────────────────────────────────────────────
 IS_YOUTUBE=false
 for _arg in "${PASSTHROUGH_ARGS[@]}"; do
-    if [[ "${_arg}" =~ (youtube\.com|youtu\.be)/ ]]; then
+    if [[ "${_arg}" =~ (youtube\.com|youtu\.be) ]]; then
         IS_YOUTUBE=true
         break
     fi
@@ -126,7 +126,7 @@ aria2c_fast_args() {
 
 # For YouTube, scope aria2c to http/https/dash protocols only to avoid
 # interfering with format selection (prevents "Only images are available").
-if "${IS_YOUTUBE}"; then
+if [[ "${IS_YOUTUBE}" == true ]]; then
     _DOWNLOADER=(--downloader "dash,http,https:aria2c")
 else
     _DOWNLOADER=(--downloader aria2c)
@@ -277,20 +277,20 @@ case "${MODE_FLAG}" in
 esac
 
 # ── YouTube-specific extractor args (bypass n-challenge and signature issues) ─
-if "${IS_YOUTUBE}"; then
+if [[ "${IS_YOUTUBE}" == true ]]; then
     YTDLP_ARGS+=(
         --extractor-args "youtube:player_client=android"
         --extractor-args "youtube:player_skip=webpage"
     )
     # Apply a broad-compatible format selector when the user hasn't chosen one
     # and the mode doesn't set its own format (audio/video handle their own).
-    if ! "${_user_has_format}" && [[ "${MODE_FLAG}" != "--audio" && "${MODE_FLAG}" != "--video" ]]; then
+    if [[ "${_user_has_format}" == false ]] && [[ "${MODE_FLAG}" != "--audio" && "${MODE_FLAG}" != "--video" ]]; then
         YTDLP_ARGS+=(--format "bv*+ba/b")
     fi
 fi
 
 # ── Debug mode args ───────────────────────────────────────────────────────────
-if "${DEBUG_MODE}"; then
+if [[ "${DEBUG_MODE}" == true ]]; then
     YTDLP_ARGS+=(-v --print-traffic)
 fi
 
@@ -304,49 +304,62 @@ _SAFE_ARGS=(
     --socket-timeout 30
     --merge-output-format mp4
 )
-if "${IS_YOUTUBE}"; then
+if [[ "${IS_YOUTUBE}" == true ]]; then
     _SAFE_ARGS+=(
         --extractor-args "youtube:player_client=android"
         --extractor-args "youtube:player_skip=webpage"
     )
 fi
-if "${DEBUG_MODE}"; then
+if [[ "${DEBUG_MODE}" == true ]]; then
     _SAFE_ARGS+=(-v --print-traffic)
 fi
 
-# Run yt-dlp; capture stderr to a temp file while still showing it in real-time
-# via process substitution so the user sees progress output.
-_tmp_err=$(mktemp)
+# Run yt-dlp; show stderr in real-time via a FIFO while also capturing it to
+# a temp file for error-pattern detection after the process exits.
+# Using a FIFO avoids the process-substitution race condition.
+_tmp_dir=$(mktemp -d)
+_tmp_fifo="${_tmp_dir}/stderr.pipe"
+_tmp_err="${_tmp_dir}/stderr.log"
+mkfifo "${_tmp_fifo}"
+# Ensure cleanup on exit or signal
+trap 'rm -rf "${_tmp_dir}"' EXIT INT TERM
+
+tee "${_tmp_err}" < "${_tmp_fifo}" >&2 &
+_tee_pid=$!
 set +e
-yt-dlp "${YTDLP_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}" 2> >(tee "${_tmp_err}" >&2)
+yt-dlp "${YTDLP_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}" 2>"${_tmp_fifo}"
 _rc=$?
-# Wait for the tee subprocess (process substitution) to finish flushing
-wait 2>/dev/null || true
 set -e
+wait "${_tee_pid}" 2>/dev/null || true
+rm -f "${_tmp_fifo}"
 
 if [[ ${_rc} -eq 0 ]]; then
-    rm -f "${_tmp_err}"
     exit 0
 fi
 
 # ── Fallback: format not available ───────────────────────────────────────────
+# NOTE: Pattern depends on yt-dlp's current error messages; update if yt-dlp
+# changes its wording.
 if grep -qE "Requested format is not available|No video formats found" "${_tmp_err}" 2>/dev/null; then
-    rm -f "${_tmp_err}"
     warn "Requested format not available. Retrying with --format best..."
     log "Format not available, retrying with --format best"
 
-    _tmp_err=$(mktemp)
+    # Place --format best after PASSTHROUGH_ARGS so it overrides any user-supplied
+    # --format flag that caused the initial failure.
+    _tmp_fifo="${_tmp_dir}/stderr2.pipe"
+    mkfifo "${_tmp_fifo}"
+    tee "${_tmp_err}" < "${_tmp_fifo}" >&2 &
+    _tee_pid=$!
     set +e
-    yt-dlp "${_SAFE_ARGS[@]}" --format best "${PASSTHROUGH_ARGS[@]}" 2> >(tee "${_tmp_err}" >&2)
+    yt-dlp "${_SAFE_ARGS[@]}" "${PASSTHROUGH_ARGS[@]}" --format best 2>"${_tmp_fifo}"
     _rc=$?
-    wait 2>/dev/null || true
     set -e
+    wait "${_tee_pid}" 2>/dev/null || true
+    rm -f "${_tmp_fifo}"
 
     if [[ ${_rc} -eq 0 ]]; then
-        rm -f "${_tmp_err}"
         exit 0
     fi
-    rm -f "${_tmp_err}"
 
     warn "Still failing. Retrying in safe mode without format override..."
     log "Retrying in safe mode"
@@ -356,8 +369,6 @@ if grep -qE "Requested format is not available|No video formats found" "${_tmp_e
     set -e
     exit ${_rc}
 fi
-
-rm -f "${_tmp_err}"
 
 # ── Fallback: turbo/fast mode general failure → safe mode ────────────────────
 if [[ "${MODE_FLAG}" == "--turbo" || "${MODE_FLAG}" == "--fast" ]]; then
