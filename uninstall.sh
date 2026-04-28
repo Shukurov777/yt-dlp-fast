@@ -48,6 +48,7 @@ REMOVE_CONFIG="n"
 if [[ -d "${CONFIG_DIR}" ]]; then
     read -rp "$(echo -e "${YELLOW}Remove config directory ${CONFIG_DIR}? [y/N]: ${NC}")" REMOVE_CONFIG || true
     if [[ "${REMOVE_CONFIG,,}" == "y" ]]; then
+        [[ "${CONFIG_DIR}" == /etc/yt-dlp-fast* ]] || { error "Unexpected CONFIG_DIR path, aborting removal."; exit 1; }
         rm -rf "${CONFIG_DIR}"
         success "Removed ${CONFIG_DIR}"
     else
@@ -60,6 +61,7 @@ REMOVE_LOGS="n"
 if [[ -d "${LOG_DIR}" ]]; then
     read -rp "$(echo -e "${YELLOW}Remove log directory ${LOG_DIR}? [y/N]: ${NC}")" REMOVE_LOGS || true
     if [[ "${REMOVE_LOGS,,}" == "y" ]]; then
+        [[ "${LOG_DIR}" == /var/log/yt-dlp-fast* ]] || { error "Unexpected LOG_DIR path, aborting removal."; exit 1; }
         rm -rf "${LOG_DIR}"
         success "Removed ${LOG_DIR}"
     else
@@ -72,6 +74,7 @@ REMOVE_OPT="n"
 if [[ -d "${INSTALL_DIR}" ]]; then
     read -rp "$(echo -e "${YELLOW}Remove install directory ${INSTALL_DIR}? [y/N]: ${NC}")" REMOVE_OPT || true
     if [[ "${REMOVE_OPT,,}" == "y" ]]; then
+        [[ "${INSTALL_DIR}" == /opt/yt-dlp-fast* ]] || { error "Unexpected INSTALL_DIR path, aborting removal."; exit 1; }
         rm -rf "${INSTALL_DIR}"
         success "Removed ${INSTALL_DIR}"
     else

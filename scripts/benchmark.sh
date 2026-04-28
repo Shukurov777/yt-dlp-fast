@@ -41,11 +41,11 @@ if ! command -v yt-dlp &>/dev/null; then
 fi
 
 # ── Create temp directory ─────────────────────────────────────────────────────
-BENCH_DIR="$(pwd)/yt-dlp-fast-bench-$$"
+BENCH_DIR="/tmp/yt-dlp-fast-bench-$$"
 mkdir -p "${BENCH_DIR}"
 
 cleanup() {
-    if [[ -n "${BENCH_DIR}" && -d "${BENCH_DIR}" ]]; then
+    if [[ -n "${BENCH_DIR}" && "${BENCH_DIR}" == /tmp/yt-dlp-fast-bench-* && -d "${BENCH_DIR}" ]]; then
         rm -rf "${BENCH_DIR}"
     fi
 }

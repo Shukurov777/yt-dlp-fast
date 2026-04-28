@@ -197,7 +197,7 @@ case "${MODE_FLAG}" in
         echo ""
 
         # Cleanup
-        [[ -n "${BENCH_DIR}" ]] && rm -rf "${BENCH_DIR}"
+        [[ -n "${BENCH_DIR}" && "${BENCH_DIR}" == /tmp/yt-dlp-fast-bench-* ]] && rm -rf "${BENCH_DIR}"
         exit 0
         ;;
     *)

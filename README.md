@@ -1,4 +1,4 @@
-# # yt-dlp-fast
+# yt-dlp-fast
 
 A high-performance wrapper and patching toolkit for [yt-dlp](https://github.com/yt-dlp/yt-dlp) that leverages `aria2c` multi-connection downloading, concurrent fragment fetching, and optimized yt-dlp internals to maximize download speeds on capable servers.
 
